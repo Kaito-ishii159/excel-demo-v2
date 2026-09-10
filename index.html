@@ -1,0 +1,278 @@
+<!doctype html>
+<html lang="ja">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1, viewport-fit=cover">
+  <meta name="robots" content="noindex,nofollow,noarchive">
+  <title>産後ケア実施報告書 入力</title>
+  <style>[hidden]{display:none!important}</style>
+  <script>
+    (() => {
+      const assetVersion = Date.now().toString();
+      window.__POSTPARTUM_ASSET_VERSION__ = assetVersion;
+      const stylesheet = document.createElement("link");
+      stylesheet.rel = "stylesheet";
+      stylesheet.href = `./styles.css?t=${assetVersion}`;
+      document.head.appendChild(stylesheet);
+    })();
+  </script>
+</head>
+<body>
+  <section id="loginView" class="login-shell">
+    <div class="login-card">
+      <p class="eyebrow">施設スタッフ用</p>
+      <h1>産後ケア実施報告書</h1>
+      <p class="muted">IDとパスワードを入力してください。</p>
+      <form id="loginForm" novalidate>
+        <label for="loginId">ID</label>
+        <input id="loginId" name="loginId" type="text" autocomplete="username" required>
+        <label for="loginPassword">パスワード</label>
+        <div class="password-row">
+          <input id="loginPassword" name="loginPassword" type="password" autocomplete="current-password" required>
+          <button id="togglePassword" class="secondary compact" type="button">表示</button>
+        </div>
+        <button id="loginButton" class="primary" type="submit">ログイン</button>
+        <p id="loginMessage" class="message" role="alert"></p>
+      </form>
+    </div>
+  </section>
+
+  <div id="appView" class="app-shell" hidden>
+    <header class="app-header">
+      <div>
+        <p class="eyebrow">千葉市産後ケア事業</p>
+        <h1>実施報告書【訪問型】</h1>
+      </div>
+      <button id="logoutButton" class="secondary" type="button">ログアウト</button>
+    </header>
+
+    <main>
+      <div class="notice">
+        入力内容はサーバーへ送信しません。同じ端末・同じブラウザ内にAES-GCMで暗号化して一時保存されます。
+      </div>
+
+      <form id="reportForm" novalidate>
+        <section class="form-section">
+          <h2>報告書情報</h2>
+          <div class="grid cols-3">
+            <div class="field span-2">
+              <label for="registrationNumber">登録番号（最大6桁）</label>
+              <input id="registrationNumber" name="registrationNumber" type="text" inputmode="numeric" maxlength="6" pattern="[0-9]*">
+            </div>
+            <div class="field">
+              <label for="reportMonth">対象年月</label>
+              <input id="reportMonth" name="reportMonth" type="month" required>
+            </div>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h2>利用者情報</h2>
+          <div class="grid cols-2">
+            <div class="field">
+              <label for="motherKana">母・ふりがな</label>
+              <input id="motherKana" name="motherKana" type="text">
+            </div>
+            <div class="field">
+              <label for="childKana">児・ふりがな</label>
+              <input id="childKana" name="childKana" type="text">
+            </div>
+            <div class="field">
+              <label for="motherName">母・氏名</label>
+              <input id="motherName" name="motherName" type="text" required>
+            </div>
+            <div class="field narrow-pair">
+              <div>
+                <label for="motherAge">母・年齢</label>
+                <input id="motherAge" name="motherAge" type="number" min="0" max="120" inputmode="numeric">
+              </div>
+            </div>
+            <div class="field">
+              <label for="childName">児・氏名</label>
+              <input id="childName" name="childName" type="text">
+            </div>
+            <div class="field">
+              <label for="childOrder">第何子</label>
+              <input id="childOrder" name="childOrder" type="number" min="1" max="20" inputmode="numeric">
+            </div>
+            <div class="field span-2">
+              <label for="address">住所</label>
+              <input id="address" name="address" type="text" placeholder="千葉市…" required>
+            </div>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h2>妊娠・分娩の状況</h2>
+          <div class="grid cols-2">
+            <div class="field">
+              <label for="pregnancyWeeks">妊娠期間（週）</label>
+              <input id="pregnancyWeeks" name="pregnancyWeeks" type="number" min="0" max="50" step="1" inputmode="numeric">
+            </div>
+            <div class="field">
+              <label for="birthDate">分娩日</label>
+              <input id="birthDate" name="birthDate" type="date">
+            </div>
+            <div class="field">
+              <label for="babyAgeMonths">生後月齢</label>
+              <input id="babyAgeMonths" name="babyAgeMonths" type="number" min="0" max="120" step="1" inputmode="numeric">
+            </div>
+            <div class="field">
+              <label for="correctedAgeMonths">修正月齢</label>
+              <input id="correctedAgeMonths" name="correctedAgeMonths" type="number" min="0" max="120" step="1" inputmode="numeric">
+            </div>
+            <div class="field">
+              <label for="pregnancyNoteStatus">特記事項</label>
+              <select id="pregnancyNoteStatus" name="pregnancyNoteStatus" required>
+                <option value="">選択してください</option>
+                <option value="none">なし</option>
+                <option value="present">あり</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="birthWeight">生下時体重（g）</label>
+              <input id="birthWeight" name="birthWeight" type="number" min="0" max="10000" inputmode="numeric">
+            </div>
+            <div class="field span-2">
+              <label for="pregnancyCourse">妊娠・分娩の経過</label>
+              <textarea id="pregnancyCourse" name="pregnancyCourse" rows="4"></textarea>
+            </div>
+            <div class="field">
+              <label for="multipleBirth">多胎の有無</label>
+              <select id="multipleBirth" name="multipleBirth" required>
+                <option value="">選択してください</option>
+                <option value="no">無</option>
+                <option value="yes">有</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="multipleAdditionalCount">多胎加算人数</label>
+              <input id="multipleAdditionalCount" name="multipleAdditionalCount" type="number" min="0" max="10" inputmode="numeric">
+            </div>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h2>利用日時</h2>
+          <div class="grid cols-2">
+            <div class="field">
+              <label for="visitStart">開始</label>
+              <input id="visitStart" name="visitStart" type="datetime-local" required>
+            </div>
+            <div class="field">
+              <label for="visitEnd">終了</label>
+              <input id="visitEnd" name="visitEnd" type="datetime-local" required>
+            </div>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h2>主訴</h2>
+          <div class="field">
+            <label for="mainComplaint">内容</label>
+            <textarea id="mainComplaint" name="mainComplaint" rows="5" required></textarea>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h2>観察・アセスメント</h2>
+          <div id="assessmentFields" class="assessment-list"></div>
+          <div class="field top-gap">
+            <label for="assessmentNotes">アセスメント記載</label>
+            <textarea id="assessmentNotes" name="assessmentNotes" rows="8"></textarea>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h2>保健指導の内容</h2>
+          <div id="guidanceFields" class="guidance-grid"></div>
+        </section>
+
+        <section class="form-section">
+          <h2>母子の状況・結果等</h2>
+          <div class="field">
+            <label for="resultNotes">内容</label>
+            <textarea id="resultNotes" name="resultNotes" rows="8" required></textarea>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h2>継続支援・連絡</h2>
+          <div class="grid cols-2">
+            <div class="field">
+              <label for="continuedSupport">継続支援</label>
+              <select id="continuedSupport" name="continuedSupport" required>
+                <option value="">選択してください</option>
+                <option value="no">否</option>
+                <option value="yes">要</option>
+              </select>
+            </div>
+            <div class="field">
+              <label for="healthDeptContact">健康課への連絡</label>
+              <select id="healthDeptContact" name="healthDeptContact" required>
+                <option value="">選択してください</option>
+                <option value="yes">あり</option>
+                <option value="no">なし</option>
+              </select>
+            </div>
+            <div class="field span-2">
+              <label for="supportDetails">支援内容</label>
+              <textarea id="supportDetails" name="supportDetails" rows="3"></textarea>
+            </div>
+          </div>
+        </section>
+
+        <section class="form-section">
+          <h2>事業所</h2>
+          <div class="grid cols-2">
+            <div class="field">
+              <label for="facilityName">事業所名</label>
+              <input id="facilityName" name="facilityName" type="text" value="リリコイ助産院" required>
+            </div>
+            <div class="field">
+              <label for="staffName">担当者名</label>
+              <input id="staffName" name="staffName" type="text" required>
+            </div>
+          </div>
+        </section>
+
+        <section class="form-section compact-section">
+          <label class="check-row">
+            <input id="clearDraftAfterDownload" type="checkbox" checked>
+            <span>Excel作成後、一時保存データを削除する</span>
+          </label>
+        </section>
+
+        <div class="sticky-actions">
+          <button id="downloadButton" class="primary" type="submit">Excelを作成・ダウンロード</button>
+          <button id="clearButton" class="danger" type="button">入力内容を全消去</button>
+        </div>
+        <p id="appMessage" class="message" role="status" aria-live="polite"></p>
+      </form>
+    </main>
+  </div>
+
+  <script>
+    (() => {
+      const version = window.__POSTPARTUM_ASSET_VERSION__ || Date.now().toString();
+      const loadScript = (src) => new Promise((resolve, reject) => {
+        const script = document.createElement("script");
+        script.src = `${src}?t=${version}`;
+        script.onload = resolve;
+        script.onerror = () => reject(new Error(`読み込みに失敗しました: ${src}`));
+        document.body.appendChild(script);
+      });
+
+      loadScript("./vendor/jszip.min.js")
+        .then(() => loadScript("./app.js"))
+        .catch((error) => {
+          console.error(error);
+          const message = document.createElement("p");
+          message.className = "asset-load-error";
+          message.textContent = "ページの読み込みに失敗しました。通信状態を確認して、もう一度開いてください。";
+          document.body.prepend(message);
+        });
+    })();
+  </script>
+</body>
+</html>

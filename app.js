@@ -12,9 +12,25 @@ const AUTH = Object.freeze({
 const STORAGE = Object.freeze({
   draft: "postpartumCareReportDraft.v1",
   authenticated: "postpartumCareAuthenticated.v1",
+  authenticatedUntil: "postpartumCareAuthenticatedUntil.v2",
   draftKey: "postpartumCareDraftKey.v2",
   failedAttempts: "postpartumCareFailedAttempts.v1",
   lockedUntil: "postpartumCareLockedUntil.v1",
+});
+
+const AUTH_SESSION_DURATION_MS = 24 * 60 * 60 * 1000;
+const AUTH_DATABASE = Object.freeze({
+  name: "postpartumCareAuth.v1",
+  store: "sessions",
+  key: "current",
+  version: 1,
+});
+
+const WORKBOOK_PATHS = Object.freeze({
+  sheet: "xl/worksheets/sheet1.xml",
+  styles: "xl/styles.xml",
+  sharedStrings: "xl/sharedStrings.xml",
+  vml: "xl/drawings/vmlDrawing1.vml",
 });
 
 const ASSESSMENTS = [
@@ -111,8 +127,12 @@ const clearButton = document.getElementById("clearButton");
 const logoutButton = document.getElementById("logoutButton");
 const multipleBirthField = document.getElementById("multipleBirth");
 const multipleAdditionalCountField = document.getElementById("multipleAdditionalCount");
+const excelImportButton = document.getElementById("excelImportButton");
+const excelImportInput = document.getElementById("excelImportInput");
+const excelImportMessage = document.getElementById("excelImportMessage");
 
 let saveTimer = null;
+let authExpiryTimer = null;
 let hasUnsavedInput = false;
 let draftCryptoKey = null;
 let draftSaveRequest = 0;
@@ -133,7 +153,12 @@ reportForm.addEventListener("input", scheduleDraftSave);
 reportForm.addEventListener("change", scheduleDraftSave);
 reportForm.addEventListener("submit", handleDownload);
 clearButton.addEventListener("click", clearAllInputs);
-logoutButton.addEventListener("click", logout);
+logoutButton.addEventListener("click", () => void logout());
+excelImportButton.addEventListener("click", () => {
+  excelImportInput.value = "";
+  excelImportInput.click();
+});
+excelImportInput.addEventListener("change", handleExcelImport);
 
 multipleBirthField.addEventListener("change", syncMultipleBirthFields);
 multipleAdditionalCountField.addEventListener("input", () => {
@@ -188,6 +213,20 @@ function setDefaultValues() {
 }
 
 async function initializeAuthentication() {
+  try {
+    const persistentStatus = await restorePersistentAuthentication();
+    if (persistentStatus === "restored") {
+      await showApp();
+      return;
+    }
+    if (persistentStatus === "expired") {
+      showMessage(loginMessage, "ログインから24時間が経過しました。再度ログインしてください。", "error");
+    }
+  } catch (error) {
+    console.warn("Persistent authentication could not be restored.", error);
+    localStorage.removeItem(STORAGE.authenticatedUntil);
+  }
+
   if (sessionStorage.getItem(STORAGE.authenticated) === "true") {
     const keyRestored = await restoreDraftKeyFromSession();
     if (keyRestored) {
@@ -222,7 +261,17 @@ async function handleLogin(event) {
     const passwordMatches = await verifyPassword(loginPassword.value);
 
     if (idMatches && passwordMatches) {
-      await initializeDraftEncryption(loginPassword.value);
+      const keyBytes = await initializeDraftEncryption(loginPassword.value);
+      const authenticatedUntil = Date.now() + AUTH_SESSION_DURATION_MS;
+
+      try {
+        await persistAuthentication(authenticatedUntil);
+        sessionStorage.removeItem(STORAGE.draftKey);
+      } catch (error) {
+        console.warn("24-hour authentication persistence is unavailable.", error);
+        sessionStorage.setItem(STORAGE.draftKey, bytesToBase64(keyBytes));
+      }
+
       sessionStorage.setItem(STORAGE.authenticated, "true");
       sessionStorage.removeItem(STORAGE.failedAttempts);
       sessionStorage.removeItem(STORAGE.lockedUntil);
@@ -274,7 +323,7 @@ async function verifyPassword(password) {
 async function initializeDraftEncryption(password) {
   const keyBytes = await deriveDraftKeyBytes(password);
   draftCryptoKey = await importDraftCryptoKey(keyBytes);
-  sessionStorage.setItem(STORAGE.draftKey, bytesToBase64(keyBytes));
+  return keyBytes;
 }
 
 async function restoreDraftKeyFromSession() {
@@ -320,6 +369,149 @@ async function importDraftCryptoKey(keyBytes) {
     false,
     ["encrypt", "decrypt"]
   );
+}
+
+function openAuthDatabase() {
+  return new Promise((resolve, reject) => {
+    if (!window.indexedDB) {
+      reject(new Error("IndexedDB is not available"));
+      return;
+    }
+
+    const request = indexedDB.open(AUTH_DATABASE.name, AUTH_DATABASE.version);
+    request.onupgradeneeded = () => {
+      if (!request.result.objectStoreNames.contains(AUTH_DATABASE.store)) {
+        request.result.createObjectStore(AUTH_DATABASE.store);
+      }
+    };
+    request.onsuccess = () => resolve(request.result);
+    request.onerror = () => reject(request.error || new Error("Could not open authentication storage"));
+    request.onblocked = () => reject(new Error("Authentication storage is blocked"));
+  });
+}
+
+async function getPersistentAuthentication() {
+  const database = await openAuthDatabase();
+  try {
+    return await new Promise((resolve, reject) => {
+      const transaction = database.transaction(AUTH_DATABASE.store, "readonly");
+      const request = transaction.objectStore(AUTH_DATABASE.store).get(AUTH_DATABASE.key);
+      request.onsuccess = () => resolve(request.result || null);
+      request.onerror = () => reject(request.error || new Error("Could not read authentication storage"));
+    });
+  } finally {
+    database.close();
+  }
+}
+
+async function putPersistentAuthentication(record) {
+  const database = await openAuthDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(AUTH_DATABASE.store, "readwrite");
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Could not write authentication storage"));
+      transaction.onabort = () => reject(transaction.error || new Error("Authentication storage write was aborted"));
+      transaction.objectStore(AUTH_DATABASE.store).put(record, AUTH_DATABASE.key);
+    });
+  } finally {
+    database.close();
+  }
+}
+
+async function deletePersistentAuthentication() {
+  const database = await openAuthDatabase();
+  try {
+    await new Promise((resolve, reject) => {
+      const transaction = database.transaction(AUTH_DATABASE.store, "readwrite");
+      transaction.oncomplete = () => resolve();
+      transaction.onerror = () => reject(transaction.error || new Error("Could not clear authentication storage"));
+      transaction.onabort = () => reject(transaction.error || new Error("Authentication storage clear was aborted"));
+      transaction.objectStore(AUTH_DATABASE.store).delete(AUTH_DATABASE.key);
+    });
+  } finally {
+    database.close();
+  }
+}
+
+async function canUseDraftKey(key) {
+  if (!key) return false;
+  try {
+    const iv = crypto.getRandomValues(new Uint8Array(12));
+    await crypto.subtle.encrypt({ name: "AES-GCM", iv }, key, new Uint8Array(0));
+    return true;
+  } catch (error) {
+    return false;
+  }
+}
+
+async function persistAuthentication(authenticatedUntil) {
+  if (!draftCryptoKey) throw new Error("Draft encryption key is not available");
+
+  await putPersistentAuthentication({ authenticatedUntil, draftKey: draftCryptoKey });
+  const stored = await getPersistentAuthentication();
+  if (
+    !stored
+    || Number(stored.authenticatedUntil) !== authenticatedUntil
+    || !(await canUseDraftKey(stored.draftKey))
+  ) {
+    await deletePersistentAuthentication();
+    throw new Error("Persistent authentication verification failed");
+  }
+
+  draftCryptoKey = stored.draftKey;
+  localStorage.setItem(STORAGE.authenticatedUntil, String(authenticatedUntil));
+  scheduleAuthenticationExpiry(authenticatedUntil);
+}
+
+async function restorePersistentAuthentication() {
+  const authenticatedUntil = Number(localStorage.getItem(STORAGE.authenticatedUntil));
+  if (!Number.isFinite(authenticatedUntil) || authenticatedUntil <= 0) return "none";
+
+  const remaining = authenticatedUntil - Date.now();
+  if (remaining <= 0) {
+    await clearAuthenticationStorage();
+    return "expired";
+  }
+  if (remaining > AUTH_SESSION_DURATION_MS) {
+    await clearAuthenticationStorage();
+    return "invalid";
+  }
+
+  const stored = await getPersistentAuthentication();
+  if (
+    !stored
+    || Number(stored.authenticatedUntil) !== authenticatedUntil
+    || !(await canUseDraftKey(stored.draftKey))
+  ) {
+    await clearAuthenticationStorage();
+    return "invalid";
+  }
+
+  draftCryptoKey = stored.draftKey;
+  sessionStorage.setItem(STORAGE.authenticated, "true");
+  sessionStorage.removeItem(STORAGE.draftKey);
+  scheduleAuthenticationExpiry(authenticatedUntil);
+  return "restored";
+}
+
+function scheduleAuthenticationExpiry(authenticatedUntil) {
+  clearTimeout(authExpiryTimer);
+  const remaining = Math.max(0, authenticatedUntil - Date.now());
+  authExpiryTimer = setTimeout(() => {
+    void logout({ expired: true });
+  }, remaining);
+}
+
+async function clearAuthenticationStorage() {
+  localStorage.removeItem(STORAGE.authenticatedUntil);
+  sessionStorage.removeItem(STORAGE.authenticated);
+  sessionStorage.removeItem(STORAGE.draftKey);
+  try {
+    await deletePersistentAuthentication();
+  } catch (error) {
+    console.warn("Persistent authentication could not be cleared.", error);
+  }
 }
 
 async function encryptDraft(draft) {
@@ -377,9 +569,11 @@ async function showApp() {
   window.scrollTo({ top: 0, behavior: "auto" });
 }
 
-function logout() {
-  sessionStorage.removeItem(STORAGE.authenticated);
-  sessionStorage.removeItem(STORAGE.draftKey);
+async function logout(options = {}) {
+  const { expired = false } = options;
+  clearTimeout(authExpiryTimer);
+  authExpiryTimer = null;
+  const clearStoragePromise = clearAuthenticationStorage();
   draftCryptoKey = null;
   document.body.classList.remove("authenticated");
   appView.hidden = true;
@@ -390,9 +584,14 @@ function logout() {
   loginView.style.removeProperty("display");
   loginId.value = "";
   loginPassword.value = "";
-  clearMessage(loginMessage);
+  if (expired) {
+    showMessage(loginMessage, "ログインから24時間が経過しました。再度ログインしてください。", "error");
+  } else {
+    clearMessage(loginMessage);
+  }
   window.scrollTo({ top: 0, behavior: "auto" });
   loginId.focus();
+  await clearStoragePromise;
 }
 
 function scheduleDraftSave() {
@@ -439,19 +638,7 @@ async function restoreDraft() {
     const isLegacyPlaintext = stored && stored.data && !stored.ciphertextBase64;
     const draft = isLegacyPlaintext ? stored : await decryptDraft(stored);
 
-    Object.entries(draft.data || {}).forEach(([name, value]) => {
-      const elements = reportForm.elements.namedItem(name);
-      if (!elements) return;
-
-      if (elements instanceof RadioNodeList) {
-        elements.value = String(value ?? "");
-      } else if (elements.type === "checkbox") {
-        elements.checked = Boolean(value);
-      } else {
-        elements.value = value ?? "";
-      }
-    });
-    syncMultipleBirthFields();
+    restoreFormValues(draft.data || {});
 
     if (isLegacyPlaintext) {
       await writeEncryptedDraft(draft);
@@ -474,6 +661,22 @@ async function restoreDraft() {
   }
 }
 
+function restoreFormValues(data) {
+  Object.entries(data).forEach(([name, value]) => {
+    const elements = reportForm.elements.namedItem(name);
+    if (!elements) return;
+
+    if (elements instanceof RadioNodeList) {
+      elements.value = String(value ?? "");
+    } else if (elements.type === "checkbox") {
+      elements.checked = Boolean(value);
+    } else {
+      elements.value = value ?? "";
+    }
+  });
+  syncMultipleBirthFields();
+}
+
 function collectFormData() {
   const data = {};
   const formData = new FormData(reportForm);
@@ -487,6 +690,301 @@ function collectFormData() {
     }
   }
   return data;
+}
+
+async function handleExcelImport(event) {
+  const file = event.target.files?.[0];
+  if (!file) return;
+
+  clearMessage(excelImportMessage);
+  excelImportButton.disabled = true;
+  excelImportButton.textContent = "Excelを読み込み中…";
+
+  try {
+    if (!/\.xlsx$/i.test(file.name || "")) {
+      throw new Error("Unsupported file type");
+    }
+
+    const workbook = await readWorkbook(file);
+    const data = await readFormDataFromWorkbook(workbook);
+    restoreFormValues(data);
+    hasUnsavedInput = true;
+
+    const saved = await saveDraft({ showStatus: false });
+    if (saved) {
+      showMessage(excelImportMessage, "過去のExcelをフォームへ復元し、暗号化して一時保存しました。", "success");
+    } else {
+      showMessage(
+        excelImportMessage,
+        "フォームへの復元は完了しましたが、一時保存に失敗しました。内容を確認してからExcelを作成してください。",
+        "error"
+      );
+    }
+  } catch (error) {
+    showMessage(
+      excelImportMessage,
+      "このExcelは読み込めませんでした。このアプリで作成した報告書（.xlsx）を選択してください。",
+      "error"
+    );
+  } finally {
+    excelImportInput.value = "";
+    excelImportButton.disabled = false;
+    excelImportButton.textContent = "過去のExcelを読み込む";
+  }
+}
+
+async function readWorkbook(file) {
+  if (typeof JSZip === "undefined") throw new Error("JSZip is not loaded");
+
+  const zip = await JSZip.loadAsync(await file.arrayBuffer());
+  const sheetFile = zip.file(WORKBOOK_PATHS.sheet);
+  if (!sheetFile) throw new Error("Worksheet is missing");
+
+  const sheetDoc = parseXml(await sheetFile.async("string"), WORKBOOK_PATHS.sheet);
+  validateWorkbookStructure(sheetDoc);
+
+  const sharedStringsFile = zip.file(WORKBOOK_PATHS.sharedStrings);
+  const sharedStrings = sharedStringsFile
+    ? readSharedStrings(parseXml(await sharedStringsFile.async("string"), WORKBOOK_PATHS.sharedStrings))
+    : [];
+
+  const vmlFile = zip.file(WORKBOOK_PATHS.vml);
+  const vmlDoc = vmlFile ? parseXml(await vmlFile.async("string"), WORKBOOK_PATHS.vml) : null;
+  return { zip, sheetDoc, sharedStrings, vmlDoc };
+}
+
+function validateWorkbookStructure(sheetDoc) {
+  const worksheet = sheetDoc.documentElement;
+  if (!worksheet || worksheet.localName !== "worksheet") throw new Error("Invalid worksheet");
+
+  const requiredCells = ["B4", "J4", "K6", "B16", "B42"];
+  const hasRequiredCells = requiredCells.every((reference) => findCell(sheetDoc, reference));
+  const hasComplaintMerge = Array.from(sheetDoc.getElementsByTagNameNS(NS.spreadsheet, "mergeCell"))
+    .some((merge) => merge.getAttribute("ref") === "B16:P16");
+  if (!hasRequiredCells || !hasComplaintMerge) throw new Error("Unexpected worksheet structure");
+}
+
+function readSharedStrings(sharedStringsDoc) {
+  return Array.from(sharedStringsDoc.getElementsByTagNameNS(NS.spreadsheet, "si"))
+    .map((item) => readStringContainer(item));
+}
+
+function readStringContainer(container) {
+  return Array.from(container.children).map((child) => {
+    if (child.localName === "t") return child.textContent || "";
+    if (child.localName !== "r") return "";
+    return Array.from(child.getElementsByTagNameNS(NS.spreadsheet, "t"))
+      .map((text) => text.textContent || "")
+      .join("");
+  }).join("");
+}
+
+function findCell(sheetDoc, cellReference) {
+  return Array.from(sheetDoc.getElementsByTagNameNS(NS.spreadsheet, "c"))
+    .find((cell) => cell.getAttribute("r") === cellReference) || null;
+}
+
+function readCellValue(sheetDoc, sharedStrings, cellReference) {
+  const cell = findCell(sheetDoc, cellReference);
+  if (!cell) return "";
+
+  if (cell.getAttribute("t") === "inlineStr") {
+    const inlineString = Array.from(cell.children).find((child) => child.localName === "is");
+    return inlineString ? readStringContainer(inlineString) : "";
+  }
+
+  const value = Array.from(cell.children).find((child) => child.localName === "v")?.textContent || "";
+  if (cell.getAttribute("t") === "s") {
+    const index = Number(value);
+    return Number.isInteger(index) && index >= 0 ? sharedStrings[index] || "" : "";
+  }
+  if (cell.getAttribute("t") === "b") return value === "1" ? "TRUE" : "FALSE";
+  return value;
+}
+
+async function readFormDataFromWorkbook(workbook) {
+  const { zip, sheetDoc, sharedStrings, vmlDoc } = workbook;
+  const cell = (reference) => cleanImportedText(readCellValue(sheetDoc, sharedStrings, reference));
+  const controlStates = await readControlStates(zip, vmlDoc);
+  const child = parseChildIdentity(cell("K6"));
+  const ages = parseBabyAges(cell("E9"));
+  const supportCell = cell("D39");
+  const continuedSupport = readExclusivePair(controlStates, 43, 44, "no", "yes")
+    || readExclusivePair(controlStates, 7, 8, "no", "yes")
+    || (/要/.test(supportCell) ? "yes" : /否/.test(supportCell) ? "no" : "");
+
+  const data = {
+    registrationNumber: ["B4", "C4", "D4", "E4", "F4", "G4"]
+      .map(cell).join("").replace(/\s/g, "").slice(0, 6),
+    reportMonth: parseReportMonth(cell("J4"), cell("O4")),
+    motherKana: cell("C5"),
+    childKana: cell("K5"),
+    motherName: cell("C6"),
+    motherAge: normalizeImportedNumber(cell("H6")),
+    childName: child.name,
+    childOrder: child.order,
+    address: cell("B7"),
+    pregnancyWeeks: normalizeImportedNumber(cell("F8")),
+    birthDate: parseReiwaDate(cell("J8")),
+    babyAgeMonths: ages.baby,
+    correctedAgeMonths: ages.corrected,
+    pregnancyNoteStatus: readExclusivePair(controlStates, 3, 4, "none", "present"),
+    birthWeight: normalizeImportedNumber(cell("E12")),
+    pregnancyCourse: cell("E11"),
+    multipleBirth: readExclusivePair(controlStates, 1, 2, "no", "yes"),
+    multipleAdditionalCount: normalizeImportedNumber(cell("H13")),
+    visitStart: parseVisitDateTime(sheetDoc, sharedStrings, 14),
+    visitEnd: parseVisitDateTime(sheetDoc, sharedStrings, 15),
+    mainComplaint: cell("B16"),
+    assessmentNotes: cell("H24"),
+    resultNotes: cell("B38"),
+    continuedSupport,
+    healthDeptContact: readExclusivePair(controlStates, 45, 46, "yes", "no"),
+    supportDetails: parseSupportDetails(supportCell),
+    facilityName: cell("B42"),
+    staffName: cell("L42"),
+  };
+
+  for (const item of ASSESSMENTS) {
+    data[`assessment_${item.key}`] = readExclusivePair(
+      controlStates,
+      item.good,
+      item.observe,
+      "good",
+      "observe"
+    );
+  }
+
+  for (const group of GUIDANCE_GROUPS) {
+    for (const [key, , reference] of group.items) {
+      data[`guidance_${key}`] = /[○〇]/.test(cell(reference));
+    }
+  }
+
+  return data;
+}
+
+async function readControlStates(zip, vmlDoc) {
+  const states = new Map();
+  await Promise.all(Array.from({ length: 46 }, async (_, index) => {
+    const controlNumber = index + 1;
+    states.set(controlNumber, await readCheckboxState(zip, vmlDoc, controlNumber));
+  }));
+  return states;
+}
+
+async function readCheckboxState(zip, vmlDoc, controlNumber) {
+  const propPath = `xl/ctrlProps/ctrlProp${controlNumber}.xml`;
+  const propFile = zip.file(propPath);
+  if (propFile) {
+    const propDoc = parseXml(await propFile.async("string"), propPath);
+    const root = propDoc.documentElement;
+    if (!root.hasAttribute("checked")) return false;
+    const value = root.getAttribute("checked").toLowerCase();
+    return !["0", "false", "unchecked"].includes(value);
+  }
+
+  if (!vmlDoc) return null;
+  const shapeId = CONTROL_SHAPES[controlNumber];
+  const shape = Array.from(vmlDoc.getElementsByTagNameNS("*", "shape"))
+    .find((item) => item.getAttribute("id") === `_x0000_s${shapeId}`);
+  if (!shape) return null;
+
+  const checked = Array.from(shape.getElementsByTagNameNS("*", "Checked"))[0];
+  if (!checked) return false;
+  return !["0", "false"].includes(String(checked.textContent || "1").trim().toLowerCase());
+}
+
+function readExclusivePair(states, firstControl, secondControl, firstValue, secondValue) {
+  const firstChecked = states.get(firstControl) === true;
+  const secondChecked = states.get(secondControl) === true;
+  if (firstChecked && !secondChecked) return firstValue;
+  if (secondChecked && !firstChecked) return secondValue;
+  return "";
+}
+
+function parseReportMonth(yearValue, monthValue) {
+  const year = westernYearFromExcel(yearValue);
+  const month = Number(normalizeImportedNumber(monthValue));
+  if (!year || month < 1 || month > 12) return "";
+  return `${year}-${String(month).padStart(2, "0")}`;
+}
+
+function parseReiwaDate(value) {
+  const year = westernYearFromExcel(value);
+  const normalized = normalizeDigits(value);
+  const parts = normalized.match(/(?:年|[RＲ]\s*(?:元|\d+)\s*)\D*(\d{1,2})\D+(\d{1,2})\D*日?/i);
+  if (!year || !parts) return "";
+
+  const month = Number(parts[1]);
+  const day = Number(parts[2]);
+  return isValidDateParts(year, month, day)
+    ? `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}`
+    : "";
+}
+
+function parseVisitDateTime(sheetDoc, sharedStrings, row) {
+  const value = (column) => cleanImportedText(readCellValue(sheetDoc, sharedStrings, `${column}${row}`));
+  const year = westernYearFromExcel(value("B"));
+  const month = Number(normalizeImportedNumber(value("E")));
+  const day = Number(normalizeImportedNumber(value("G")));
+  const hour = Number(normalizeImportedNumber(value("I")));
+  const minute = Number(normalizeImportedNumber(value("K")));
+
+  if (!isValidDateParts(year, month, day) || hour < 0 || hour > 23 || minute < 0 || minute > 59) return "";
+  return `${year}-${String(month).padStart(2, "0")}-${String(day).padStart(2, "0")}T${String(hour).padStart(2, "0")}:${String(minute).padStart(2, "0")}`;
+}
+
+function parseChildIdentity(value) {
+  const match = String(value || "").match(/^([\s\S]*?)\s*【\s*第\s*([0-9０-９]*)\s*子\s*】/);
+  if (!match) return { name: cleanImportedText(value), order: "" };
+  return {
+    name: cleanImportedText(match[1]),
+    order: normalizeImportedNumber(match[2]),
+  };
+}
+
+function parseBabyAges(value) {
+  const normalized = normalizeDigits(value);
+  const match = normalized.match(/生後\s*(\d*)\s*か月[\s\S]*?修正月齢\s*[：:]\s*(\d*)\s*か月/);
+  return match
+    ? { baby: match[1] || "", corrected: match[2] || "" }
+    : { baby: "", corrected: "" };
+}
+
+function parseSupportDetails(value) {
+  const match = String(value || "").match(/支援内容\s*[：:]\s*([\s\S]*?)\s*[〕）)]?\s*$/);
+  return match ? match[1].trim() : "";
+}
+
+function westernYearFromExcel(value) {
+  const normalized = normalizeDigits(value);
+  const western = normalized.match(/\b(20\d{2})\b/);
+  if (western) return Number(western[1]);
+
+  const reiwa = normalized.match(/(?:令和|[RＲ])\s*(元|\d{1,2})/i);
+  if (!reiwa) return null;
+  const eraYear = reiwa[1] === "元" ? 1 : Number(reiwa[1]);
+  return eraYear > 0 ? eraYear + 2018 : null;
+}
+
+function normalizeImportedNumber(value) {
+  const match = normalizeDigits(value).replaceAll(",", "").match(/-?\d+(?:\.\d+)?/);
+  return match ? match[0] : "";
+}
+
+function cleanImportedText(value) {
+  return String(value || "").replace(/\r\n?/g, "\n").trim();
+}
+
+function normalizeDigits(value) {
+  return String(value || "").replace(/[０-９]/g, (digit) => String(digit.charCodeAt(0) - 0xFEE0));
+}
+
+function isValidDateParts(year, month, day) {
+  if (!year || month < 1 || month > 12 || day < 1 || day > 31) return false;
+  const date = new Date(year, month - 1, day);
+  return date.getFullYear() === year && date.getMonth() === month - 1 && date.getDate() === day;
 }
 
 async function handleDownload(event) {
@@ -506,19 +1004,18 @@ async function handleDownload(event) {
     if (!response.ok) throw new Error(`Template fetch failed: ${response.status}`);
 
     const zip = await JSZip.loadAsync(await response.arrayBuffer());
-    const sheetPath = "xl/worksheets/sheet1.xml";
-    const vmlPath = "xl/drawings/vmlDrawing1.vml";
-    const sheetXml = await zip.file(sheetPath).async("string");
-    const vmlXml = await zip.file(vmlPath).async("string");
+    const sheetXml = await zip.file(WORKBOOK_PATHS.sheet).async("string");
+    const vmlXml = await zip.file(WORKBOOK_PATHS.vml).async("string");
 
-    const sheetDoc = parseXml(sheetXml, sheetPath);
-    const vmlDoc = parseXml(vmlXml, vmlPath);
+    const sheetDoc = parseXml(sheetXml, WORKBOOK_PATHS.sheet);
+    const vmlDoc = parseXml(vmlXml, WORKBOOK_PATHS.vml);
 
     applyCellValues(sheetDoc, data);
+    await applyMainComplaintBlackStyle(zip, sheetDoc);
     await applyCheckboxValues(zip, vmlDoc, data);
 
-    zip.file(sheetPath, serializeXml(sheetDoc));
-    zip.file(vmlPath, serializeXml(vmlDoc));
+    zip.file(WORKBOOK_PATHS.sheet, serializeXml(sheetDoc));
+    zip.file(WORKBOOK_PATHS.vml, serializeXml(vmlDoc));
 
     const blob = await zip.generateAsync({
       type: "blob",
@@ -593,6 +1090,46 @@ function applyCellValues(sheetDoc, data) {
   setCellString(sheetDoc, "D39", `要〔支援内容：${supportDetails}〕`);
   setCellString(sheetDoc, "B42", data.facilityName);
   setCellString(sheetDoc, "L42", data.staffName);
+}
+
+async function applyMainComplaintBlackStyle(zip, sheetDoc) {
+  const stylesFile = zip.file(WORKBOOK_PATHS.styles);
+  const complaintCell = findCell(sheetDoc, "B16");
+  if (!stylesFile || !complaintCell) throw new Error("Workbook styles are missing");
+
+  const stylesDoc = parseXml(await stylesFile.async("string"), WORKBOOK_PATHS.styles);
+  const fonts = stylesDoc.getElementsByTagNameNS(NS.spreadsheet, "fonts")[0];
+  const cellXfs = stylesDoc.getElementsByTagNameNS(NS.spreadsheet, "cellXfs")[0];
+  if (!fonts || !cellXfs) throw new Error("Workbook styles are missing");
+  const sourceStyleIndex = Number(complaintCell.getAttribute("s"));
+  const sourceStyle = Array.from(cellXfs.children)[sourceStyleIndex];
+  if (!sourceStyle) throw new Error("Complaint style is missing");
+
+  const sourceFontIndex = Number(sourceStyle.getAttribute("fontId"));
+  const sourceFont = Array.from(fonts.children)[sourceFontIndex];
+  if (!sourceFont) throw new Error("Complaint font is missing");
+
+  const blackFont = sourceFont.cloneNode(true);
+  Array.from(blackFont.children)
+    .filter((child) => child.localName === "color")
+    .forEach((color) => color.remove());
+  const blackColor = stylesDoc.createElementNS(NS.spreadsheet, "color");
+  blackColor.setAttribute("rgb", "FF000000");
+  const fontName = Array.from(blackFont.children).find((child) => child.localName === "name");
+  blackFont.insertBefore(blackColor, fontName || null);
+  fonts.appendChild(blackFont);
+  const blackFontIndex = Array.from(fonts.children).length - 1;
+  fonts.setAttribute("count", String(blackFontIndex + 1));
+
+  const blackStyle = sourceStyle.cloneNode(true);
+  blackStyle.setAttribute("fontId", String(blackFontIndex));
+  blackStyle.setAttribute("applyFont", "1");
+  cellXfs.appendChild(blackStyle);
+  const blackStyleIndex = Array.from(cellXfs.children).length - 1;
+  cellXfs.setAttribute("count", String(blackStyleIndex + 1));
+
+  complaintCell.setAttribute("s", String(blackStyleIndex));
+  zip.file(WORKBOOK_PATHS.styles, serializeXml(stylesDoc));
 }
 
 function setVisitRow(sheetDoc, row, parts) {

@@ -51,6 +51,21 @@
         入力内容はサーバーへ送信しません。同じ端末・同じブラウザ内にAES-GCMで暗号化して一時保存されます。
       </div>
 
+      <section class="import-panel" aria-labelledby="excelImportTitle">
+        <div>
+          <h2 id="excelImportTitle">過去の報告書を再利用</h2>
+          <p>このアプリで作成したExcelを端末内で読み込み、フォームへ復元します。</p>
+        </div>
+        <button id="excelImportButton" class="secondary" type="button">過去のExcelを読み込む</button>
+        <input
+          id="excelImportInput"
+          type="file"
+          accept=".xlsx,application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+          hidden
+        >
+        <p id="excelImportMessage" class="message import-message" role="status" aria-live="polite"></p>
+      </section>
+
       <form id="reportForm" novalidate>
         <section class="form-section">
           <h2>報告書情報</h2>
